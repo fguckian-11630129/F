@@ -4,9 +4,11 @@ import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Date;
 
+import hotel.booking.BookingUI.State;
 import hotel.credit.CreditAuthorizer;
 import hotel.credit.CreditCard;
 import hotel.credit.CreditCardType;
+import hotel.entities.Booking;
 import hotel.entities.Guest;
 import hotel.entities.Hotel;
 import hotel.entities.Room;
@@ -16,7 +18,7 @@ import hotel.utils.IOUtils;
 public class BookingCTL {
 	
 	
-	private static enum State {PHONE, ROOM, REGISTER, TIMES, CREDIT, APPROVED, CANCELLED, COMPLETED}	
+	private static enum CONTROL_STATE {PHONE, ROOM, REGISTER, TIMES, CREDIT, APPROVED, CANCELLED, COMPLETED}	
 	
 	private BookingUI bookingUI;
 	private Hotel hotel;
@@ -25,7 +27,7 @@ public class BookingCTL {
 	private Room room;
 	private double cost;
 	
-	private State state;
+	private CONTROL_STATE controlState;
 	private int phoneNumber;
 	private RoomType selectedRoomType;
 	private int occupantNumber;
@@ -36,7 +38,7 @@ public class BookingCTL {
 	public BookingCTL(Hotel hotel) {
 		this.bookingUI = new BookingUI(this);
 		this.hotel = hotel;
-		state = State.PHONE;
+		controlState = CONTROL_STATE.PHONE;
 	}
 
 	
@@ -47,8 +49,8 @@ public class BookingCTL {
 	
 	
 	public void phoneNumberEntered(int phoneNumber) {
-		if (state != State.PHONE) {
-			String mesg = String.format("BookingCTL: phoneNumberEntered : bad state : %s", state);
+		if (controlState != CONTROL_STATE.PHONE) {
+			String mesg = String.format("BookingCTL: phoneNumberEntered : bad state : %s", controlState);
 			throw new RuntimeException(mesg);
 		}
 		this.phoneNumber = phoneNumber;
@@ -58,32 +60,32 @@ public class BookingCTL {
 		if (isRegistered) {
 			guest = hotel.findGuestByPhoneNumber(phoneNumber);
 			bookingUI.displayGuestDetails(guest.getName(), guest.getAddress(), guest.getPhoneNumber());
-			this.state = State.ROOM;
+			this.controlState = CONTROL_STATE.ROOM;
 			bookingUI.setState(BookingUI.State.ROOM);
 		}
 		else {
-			this.state = State.REGISTER;
+			this.controlState = CONTROL_STATE.REGISTER;
 			bookingUI.setState(BookingUI.State.REGISTER);
 		}
 	}
 
 
 	public void guestDetailsEntered(String name, String address) {
-		if (state != State.REGISTER) {
-			String mesg = String.format("BookingCTL: guestDetailsEntered : bad state : %s", state);
+		if (controlState != CONTROL_STATE.REGISTER) {
+			String mesg = String.format("BookingCTL: guestDetailsEntered : bad state : %s", controlState);
 			throw new RuntimeException(mesg);
 		}
 		guest = hotel.registerGuest(name, address, phoneNumber);
 		
 		bookingUI.displayGuestDetails(guest.getName(), guest.getAddress(), guest.getPhoneNumber());
-		state = State.ROOM;
+		controlState = CONTROL_STATE.ROOM;
 		bookingUI.setState(BookingUI.State.ROOM);
 	}
 
 
 	public void roomTypeAndOccupantsEntered(RoomType selectedRoomType, int occupantNumber) {
-		if (state != State.ROOM) {
-			String mesg = String.format("BookingCTL: roomTypeAndOccupantsEntered : bad state : %s", state);
+		if (controlState != CONTROL_STATE.ROOM) {
+			String mesg = String.format("BookingCTL: roomTypeAndOccupantsEntered : bad state : %s", controlState);
 			throw new RuntimeException(mesg);
 		}
 		this.selectedRoomType = selectedRoomType;
@@ -96,15 +98,15 @@ public class BookingCTL {
 			bookingUI.displayMessage(notSuitableMessage);
 		}
 		else {
-			state = State.TIMES;
+			controlState = CONTROL_STATE.TIMES;
 			bookingUI.setState(BookingUI.State.TIMES);
 		}
 	}
 
 
 	public void bookingTimesEntered(Date arrivalDate, int stayLength) {
-		if (state != State.TIMES) {
-			String mesg = String.format("BookingCTL: bookingTimesEntered : bad state : %s", state);
+		if (controlState != CONTROL_STATE.TIMES) {
+			String mesg = String.format("BookingCTL: bookingTimesEntered : bad state : %s", controlState);
 			throw new RuntimeException(mesg);
 		}
 		this.arrivalDate = arrivalDate;
@@ -130,21 +132,46 @@ public class BookingCTL {
 			cost = selectedRoomType.calculateCost(arrivalDate, stayLength);
 			String description = selectedRoomType.getDescription();
 			bookingUI.displayBookingDetails(description, arrivalDate, stayLength, cost);
-			state = State.CREDIT;
+			controlState = CONTROL_STATE.CREDIT;
 			bookingUI.setState(BookingUI.State.CREDIT);
 		}
 	}
 
 
 	public void creditDetailsEntered(CreditCardType type, int number, int ccv) {
-		// TODO Auto-generated method stub
+		if(controlState!=controlState.CREDIT) {
+			throw new RuntimeException("Booking state must be in CREDIT in order to enter details");
+		}
+		CreditCard creditCard = new CreditCard(type, number, ccv);
+		if(CreditAuthorizer.getInstance().authorize(creditCard, cost)) {
+			//book hotel
+			long confirmationNumber = hotel.book(room, guest, arrivalDate, ccv, number, creditCard);
+			
+			//call UI.displayConfirmedBooking
+			Booking booking = hotel.bookingsByConfirmationNumber.get(confirmationNumber);
+			Room room = booking.getRoom();
+			String roomDescription = room.getDescription();
+			int roomNumber = room.getId();
+			Guest guest = booking.getGuest();
+			String guestName = guest.getName();
+			String creditCardVendor = creditCard.getVendor();
+			int cardNumber = creditCard.getNumber();
+			bookingUI.displayConfirmedBooking(roomDescription, roomNumber, arrivalDate, ccv, guestName, creditCardVendor, cardNumber, ccv, confirmationNumber);
+			
+			//update states
+			this.controlState = controlState.COMPLETED;
+			bookingUI.setState(BookingUI.State.COMPLETED);
+		}
+		else {
+			bookingUI.displayMessage("Card could not be authorised");
+		}
 	}
 
 
 	public void cancel() {
 		IOUtils.trace("BookingCTL: cancel");
 		bookingUI.displayMessage("Booking cancelled");
-		state = State.CANCELLED;
+		controlState = CONTROL_STATE.CANCELLED;
 		bookingUI.setState(BookingUI.State.CANCELLED);
 	}
 	
